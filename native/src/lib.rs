@@ -6,8 +6,8 @@ pub struct AssetGuard {
   pub java_exec: PathBuf,
 }
 
-pub fn extract_pack_xz(file_paths: Vec<PathBuf>) -> u64 {
-  use anyhow::Result;
+pub fn extract_xz(file_paths: Vec<PathBuf>) -> u64 {
+  use anyhow::{anyhow, Context, Result};
   use std::fs;
   use std::io::{Read, Write};
   use xz2::read::XzDecoder;
@@ -20,7 +20,7 @@ pub fn extract_pack_xz(file_paths: Vec<PathBuf>) -> u64 {
 
     let error_prone = || -> Result<()> {
       let file_handle = fs::File::open(&file)
-        .expect(&format!("extractPackXZ was unable to read {}", &file.display()));
+        .with_context(|| format!("extractXZ was unable to read {}", &file.display()))?;
       
       let mut file_buf: Vec<u8> = vec![];
       
@@ -28,20 +28,18 @@ pub fn extract_pack_xz(file_paths: Vec<PathBuf>) -> u64 {
       
       match decompressor.read_to_end(&mut file_buf) {
         Ok(_) => {
-          let mut new_file = String::from(file
+          let new_file = file
             .file_stem()
             .unwrap()
             .to_str()
-            .unwrap()
-          );
-          new_file.truncate(new_file.len() - 5);
+            .unwrap();
 
           let mut f = fs::File::create(format!("{}/{}", folder_path.display(), new_file))
-            .expect(&format!("Unable to create new file '{}' from '{}'", new_file, file.display()));
+            .with_context(|| format!("Unable to create new file '{}' from '{}'", new_file, file.display()))?;
 
-          f.write_all(&file_buf).expect(&format!("Unable to write to {}", new_file));
+          f.write_all(&file_buf).with_context(|| format!("Unable to write to {}", new_file))?;
         },
-        Err(e) => println!("Unable to decompress {}: {:#?}", file.display(), e),
+        Err(e) => return Err(anyhow!("Unable to decompress {}: {:#?}", file.display(), e)),
       };
 
       Ok(())
@@ -54,22 +52,6 @@ pub fn extract_pack_xz(file_paths: Vec<PathBuf>) -> u64 {
   }
 
   error_count
-}
-
-pub fn extract_pack_xz_js(mut cx: FunctionContext) -> JsResult<JsNumber> {
-  let file_array = cx.argument::<JsArray>(0)?;
-  let tainted_vec = file_array.to_vec(&mut cx)?;
-  let mut cleansed_vec: Vec<PathBuf> = vec![];
-
-  for element in tainted_vec {
-    if !element.is_a::<JsString>() {
-      panic!("The array is not pure");
-    }
-
-    cleansed_vec.push(PathBuf::from(element.downcast_or_throw::<JsString, FunctionContext>(&mut cx)?.value()));
-  }
-
-  Ok(cx.number(extract_pack_xz(cleansed_vec) as f64))
 }
 
 declare_types! {
@@ -87,11 +69,26 @@ declare_types! {
         java_exec,
       })
     }
+
+    method extractXZ(mut cx) {
+      let file_array = cx.argument::<JsArray>(0)?;
+      let tainted_vec = file_array.to_vec(&mut cx)?;
+      let mut cleansed_vec: Vec<PathBuf> = vec![];
+
+      for element in tainted_vec {
+        if !element.is_a::<JsString>() {
+          panic!("The array is not pure");
+        }
+
+        cleansed_vec.push(PathBuf::from(element.downcast_or_throw::<JsString, _>(&mut cx)?.value()));
+      }
+
+      Ok(cx.number(extract_xz(cleansed_vec) as f64).upcast())
+    }
   }
 }
 
 register_module!(mut cx, {
-  cx.export_function("extractPackXZ", extract_pack_xz_js)?;
   cx.export_class::<JsAssetGuard>("AssetGuard")?;
 
   Ok(())
